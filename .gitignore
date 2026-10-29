@@ -1,0 +1,55 @@
+# Local API credentials and environment files
+.env
+.env.*
+!.env.example
+/src/base_llm/provider_config_local.py
+**/provider_config_local.py
+/secrets/
+
+# Questionnaire inputs and generated/personal data
+/anket/
+/outputs/
+/data/
+**/data/
+/input/
+/inputs/
+**/uploads/
+*.pdf
+*.csv
+*.tsv
+*.xls
+*.xlsx
+*.parquet
+*.jsonl
+*.ndjson
+*.sql
+*.sql.gz
+*.sqlite
+*.sqlite3
+*.db
+
+# Local Python environments and generated files
+.venv/
+.venv*/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+/tmp/
+**/tmp/
+/.codex_tmp/
+*.log
+
+# Downloaded model weights and caches
+*.safetensors
+*.pt
+*.pth
+*.onnx
+*.gguf
+*.ckpt
+**/model_cache/
+**/huggingface_cache/
+
+# Operating system files
+.DS_Store
+._*
