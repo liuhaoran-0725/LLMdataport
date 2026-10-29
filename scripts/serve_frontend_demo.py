@@ -1117,6 +1117,7 @@ def run_pipeline_job(job_id: str, person_id: str, options: dict[str, Any]) -> No
             output_dir=OUTPUT_ROOT,
             dpi=option_int(options, "dpi", 130),
             max_image_width=option_int(options, "max_image_width", 1400),
+            redact_first_page_name=option_bool(options, "redact_first_page_name"),
             llm_consolidate=option_bool(options, "llm_consolidate"),
             enable_ocr=option_bool(options, "enable_ocr"),
             ocr_device=str(options.get("ocr_device") or "auto"),
@@ -1162,6 +1163,7 @@ def run_pipeline_job(job_id: str, person_id: str, options: dict[str, Any]) -> No
         )
         monitor_thread.start()
         final_record = pipeline.process_person_pdf(pdf_path, survey_spec)
+        final_record["redact_first_page_name"] = option_bool(options, "redact_first_page_name")
         final_record["template_id"] = template_id
         final_record["template_name"] = str(job["template"].get("template_name") or template_id)
         final_record["template_mode"] = "none" if freeform_mode else "existing"
@@ -1410,6 +1412,7 @@ class DemoHandler(SimpleHTTPRequestHandler):
                     "force_pages": True,
                     **options,
                 }
+                options["redact_first_page_name"] = option_bool(options, "redact_first_page_name")
                 options["enable_ocr"] = False
                 options["force_ocr"] = False
                 job = enqueue_pipeline_job(
@@ -1428,15 +1431,19 @@ class DemoHandler(SimpleHTTPRequestHandler):
                 if not pdf_path.exists():
                     self.send_json({"error": f"Input PDF not found for {person_id}."}, HTTPStatus.NOT_FOUND)
                     return
-                if "template_id" not in options:
+                record = {}
+                if "template_id" not in options or "redact_first_page_name" not in options:
                     try:
                         record = load_person_record(person_id)
                     except Exception:
                         record = {}
+                if "template_id" not in options:
                     options["template_id"] = record.get("template_id") or (DEFAULT_TEMPLATE_ID if default_template_mode({}) == "existing" else "none")
                     options["template_mode"] = record.get("template_mode") or ("none" if options["template_id"] == "none" else "existing")
                     if options["template_mode"] == "none" and "data_category" not in options:
                         options["data_category"] = record.get("data_category") or "general"
+                if "redact_first_page_name" not in options:
+                    options["redact_first_page_name"] = bool(record.get("redact_first_page_name", False))
                 options["enable_ocr"] = False
                 options["force_ocr"] = False
                 job = enqueue_pipeline_job(person_id, options, source="rerun", input_pdf=pdf_path)

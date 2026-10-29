@@ -13,6 +13,7 @@ from .llm_settings import load_llm_settings
 from .json_utils import dump_json, load_json
 from .ocr_tools import PaddleOCRVLRegionReader, apply_page_ocr, should_apply_ocr_result
 from .pdf_tools import extract_text, render_pdf, require_poppler, split_logical_pages
+from .name_redaction import NAME_REDACTION_VERSION, NameRedactionError, redact_first_page_name
 
 EXTRACTION_CONTRACT_REVISION = "2026-10-05"
 
@@ -26,6 +27,7 @@ class BaseLLMPipeline:
         output_dir: Path,
         dpi: int = 130,
         max_image_width: int = 1400,
+        redact_first_page_name: bool = False,
         llm_consolidate: bool = False,
         enable_ocr: bool = False,
         ocr_model_path: Path | None = None,
@@ -50,6 +52,7 @@ class BaseLLMPipeline:
         self.output_dir = output_dir
         self.dpi = dpi
         self.max_image_width = max_image_width
+        self.redact_first_page_name_enabled = bool(redact_first_page_name)
         self.llm_consolidate = llm_consolidate
         self.enable_ocr = enable_ocr
         self.enable_check_llm = enable_check_llm
@@ -176,6 +179,24 @@ class BaseLLMPipeline:
             logical_dir,
             max_width=self.max_image_width,
         )
+        first_page = next(
+            (page for page in logical_pages if int(page["logical_page"]) == 1),
+            None,
+        )
+        if first_page is None and self.redact_first_page_name_enabled:
+            raise NameRedactionError(
+                "找不到第一页，未打码图像不会发送给模型。"
+            )
+        if first_page is not None and self.redact_first_page_name_enabled:
+            first_page["_name_redaction"] = redact_first_page_name(
+                Path(str(first_page["image_path"]))
+            )
+        elif first_page is not None:
+            first_page["_name_redaction"] = {
+                "status": "skipped",
+                "version": NAME_REDACTION_VERSION,
+                "reason": "not_selected",
+            }
         dump_json(str(person_dir / "logical_pages.json"), logical_pages)
         self.report_progress("extraction", "phase_started", total_pages=len(logical_pages))
 
@@ -184,14 +205,33 @@ class BaseLLMPipeline:
         for page in logical_pages:
             logical_page = int(page["logical_page"])
             page_json_path = person_dir / f"page_{logical_page:03d}.json"
-            cached = page_json_path.exists() and not self.force_pages
+            cached_result = None
+            if page_json_path.exists() and not self.force_pages:
+                try:
+                    cached_result = load_json(str(page_json_path))
+                except Exception:
+                    cached_result = None
+            cached = isinstance(cached_result, dict)
+            if logical_page == 1:
+                cached_redaction = (
+                    cached_result.get("_name_redaction")
+                    if isinstance(cached_result, dict)
+                    else None
+                )
+                cached = (
+                    cached
+                    and isinstance(cached_redaction, dict)
+                    and cached_redaction.get("status")
+                    == ("applied" if self.redact_first_page_name_enabled else "skipped")
+                    and cached_redaction.get("version") == NAME_REDACTION_VERSION
+                )
             succeeded = True
             self.report_progress("extraction", "page_started", logical_page=logical_page)
             page_started = time.monotonic()
             if cached:
                 reused_pages.add(logical_page)
                 print(f"Reusing {person_id} logical page {logical_page}...", flush=True)
-                result = load_json(str(page_json_path))
+                result = cached_result
             else:
                 print(f"Extracting {person_id} logical page {logical_page}...", flush=True)
                 relevant_questions = questions_for_page(survey_spec, logical_page)
@@ -222,6 +262,8 @@ class BaseLLMPipeline:
             result["_physical_page"] = page["physical_page"]
             result["_side"] = page["side"]
             result["_image_path"] = page["image_path"]
+            if logical_page == 1:
+                result["_name_redaction"] = page["_name_redaction"]
             if not freeform_mode:
                 remap_page_answer_ids(survey_spec, result)
             self.apply_ocr_if_requested(
