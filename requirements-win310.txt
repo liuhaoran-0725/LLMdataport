@@ -1,0 +1,17 @@
+--extra-index-url https://download.pytorch.org/whl/cu118
+
+torch==2.7.1+cu118
+torchvision==0.22.1+cu118
+transformers==5.0.0
+accelerate==1.13.0
+huggingface_hub==1.13.0
+safetensors==0.7.0
+sentencepiece==0.2.1
+protobuf==7.34.1
+tqdm==4.67.3
+requests==2.33.1
+pillow==12.1.1
+numpy==2.2.6
+PyYAML==6.0.3
+einops==0.8.1
+pypdf==6.10.0
