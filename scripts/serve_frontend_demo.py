@@ -1185,6 +1185,17 @@ def run_pipeline_job(job_id: str, person_id: str, options: dict[str, Any]) -> No
             job["database_export_status"] = "failed"
             job["database_export_error"] = str(export_error)
             completion_message = f"読み取りJSONは保存済みですが、入庫用JSONの作成に失敗しました: {export_error}"
+        try:
+            from src.base_llm.excel_template_export import write_excel_export
+
+            excel_result = write_excel_export(PERSONS_ROOT)
+            job.update(excel_result)
+            job["excel_export_status"] = "finished"
+            completion_message += " 指定形式のExcelも更新しました。管理者画面から全件をダウンロードできます。"
+        except Exception as excel_error:
+            job["excel_export_status"] = "failed"
+            job["excel_export_error"] = str(excel_error)
+            completion_message += f" 指定形式のExcel更新に失敗しました: {excel_error}"
         update_job(job, status="finished", stage="finished", progress=100, message=completion_message)
         job["eta_seconds"] = 0
         job["progress_detail"] = "完了"
@@ -1320,6 +1331,25 @@ class DemoHandler(SimpleHTTPRequestHandler):
                 return
             if route == "/api/persons":
                 self.send_json({"persons": list_person_summaries()})
+                return
+            if route == "/api/export/excel":
+                from src.base_llm.excel_template_export import write_excel_export
+
+                export_result = write_excel_export(PERSONS_ROOT)
+                export_path = Path(str(export_result["excel_export_path"]))
+                body = export_path.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header(
+                    "Content-Type",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+                self.send_header(
+                    "Content-Disposition",
+                    'attachment; filename="formatted_data.xlsx"',
+                )
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
                 return
             if route.startswith("/api/person/"):
                 self.handle_person_get(route)
