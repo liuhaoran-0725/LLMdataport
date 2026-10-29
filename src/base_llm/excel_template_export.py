@@ -89,20 +89,32 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 QUESTION_ID_ALIASES: dict[str, set[str]] = {
-    "EH1": {"page_004_q1_main"},
-    "EH1-2": {"page_004_q1_activity_1"},
-    "EH1-3": {"page_004_q1_activity_2"},
-    "EH1times": {"page_004_q1_frequency"},
-    "EH1hours": {"page_004_q1_duration"},
-    "EH2": {"page_004_q2_main"},
-    "EH2-2": {"page_004_q2_activity_1"},
-    "EH2-3": {"page_004_q2_activity_2"},
-    "EH2times": {"page_004_q2_frequency"},
-    "EH2hours": {"page_004_q2_duration"},
-    "EH3": {"page_004_q3_main"},
-    "EH3times": {"page_004_q3_frequency"},
-    "EH3hours": {"page_004_q3_duration"},
-    "EH4": {"page_004_q4_text"},
+    "EH1": {"page_004_q1_main", "page_004_field_003"},
+    "EH1-2": {"page_004_q1_activity_1", "page_004_table_001_row_001"},
+    "EH1-3": {"page_004_q1_activity_2", "page_004_table_001_row_002"},
+    "EH1times": {
+        "page_004_q1_frequency", "page_004_field_006", "page_004_table_002_row_001",
+    },
+    "EH1hours": {
+        "page_004_q1_duration", "page_004_field_007", "page_004_table_002_row_002",
+    },
+    "EH2": {"page_004_q2_main", "page_004_field_008"},
+    "EH2-2": {"page_004_q2_activity_1", "page_004_table_003_row_001"},
+    "EH2-3": {"page_004_q2_activity_2", "page_004_table_003_row_002"},
+    "EH2times": {
+        "page_004_q2_frequency", "page_004_field_011", "page_004_table_004_row_001",
+    },
+    "EH2hours": {
+        "page_004_q2_duration", "page_004_field_012", "page_004_table_004_row_002",
+    },
+    "EH3": {"page_004_q3_main", "page_004_field_013"},
+    "EH3times": {
+        "page_004_q3_frequency", "page_004_field_014", "page_004_table_005_row_001",
+    },
+    "EH3hours": {
+        "page_004_q3_duration", "page_004_field_015", "page_004_table_005_row_002",
+    },
+    "EH4": {"page_004_q4_text", "page_004_field_016"},
 }
 
 

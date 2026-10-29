@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import cgi
+from collections import deque
 import io
 import json
 import mimetypes
@@ -41,8 +42,10 @@ DEFAULT_MODEL = DEFAULT_LLM_SETTINGS.model
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 UNSAFE_UPLOAD_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 MAX_UPLOAD_BYTES = 250 * 1024 * 1024
+MAX_JOB_STATUS_IDS = 2000
+SAFE_JOB_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 JOBS: dict[str, dict[str, Any]] = {}
-JOB_QUEUE: list[str] = []
+JOB_QUEUE: deque[str] = deque()
 JOB_LOCK = threading.RLock()
 JOB_WORKER_THREAD: threading.Thread | None = None
 DATA_CATEGORY_META = {
@@ -1185,17 +1188,21 @@ def run_pipeline_job(job_id: str, person_id: str, options: dict[str, Any]) -> No
             job["database_export_status"] = "failed"
             job["database_export_error"] = str(export_error)
             completion_message = f"読み取りJSONは保存済みですが、入庫用JSONの作成に失敗しました: {export_error}"
-        try:
-            from src.base_llm.excel_template_export import write_excel_export
+        if option_bool(options, "defer_excel_export"):
+            job["excel_export_status"] = "deferred"
+            completion_message += " 指定形式のExcelは一括処理の終了後にまとめて更新します。"
+        else:
+            try:
+                from src.base_llm.excel_template_export import write_excel_export
 
-            excel_result = write_excel_export(PERSONS_ROOT)
-            job.update(excel_result)
-            job["excel_export_status"] = "finished"
-            completion_message += " 指定形式のExcelも更新しました。管理者画面から全件をダウンロードできます。"
-        except Exception as excel_error:
-            job["excel_export_status"] = "failed"
-            job["excel_export_error"] = str(excel_error)
-            completion_message += f" 指定形式のExcel更新に失敗しました: {excel_error}"
+                excel_result = write_excel_export(PERSONS_ROOT)
+                job.update(excel_result)
+                job["excel_export_status"] = "finished"
+                completion_message += " 指定形式のExcelも更新しました。管理者画面から全件をダウンロードできます。"
+            except Exception as excel_error:
+                job["excel_export_status"] = "failed"
+                job["excel_export_error"] = str(excel_error)
+                completion_message += f" 指定形式のExcel更新に失敗しました: {excel_error}"
         update_job(job, status="finished", stage="finished", progress=100, message=completion_message)
         job["eta_seconds"] = 0
         job["progress_detail"] = "完了"
@@ -1222,11 +1229,28 @@ def run_pipeline_job(job_id: str, person_id: str, options: dict[str, Any]) -> No
             monitor_thread.join(timeout=1.0)
 
 
-def refresh_queue_positions_locked() -> None:
-    for index, queued_job_id in enumerate(JOB_QUEUE, start=1):
-        queued_job = JOBS.get(queued_job_id)
-        if queued_job and queued_job.get("status") == "queued":
-            queued_job["queue_position"] = index
+def compact_job_status(job: dict[str, Any]) -> dict[str, Any]:
+    """Return only the fields the batch monitor needs, not full answer records."""
+    person = job.get("person") or {}
+    person_summary = None
+    if person:
+        person_summary = {
+            key: person.get(key)
+            for key in ("id", "record_key", "answers_count", "review_count")
+        }
+    return {
+        key: job.get(key)
+        for key in (
+            "job_id", "status", "stage", "progress", "progress_detail", "error",
+            "queue_position", "person_id", "uploaded_filename", "template",
+            "data_category_label", "total_pages", "pages_done", "check_pages_done",
+            "eta_seconds", "eta_min_seconds", "eta_max_seconds", "eta_state",
+            "eta_scope", "elapsed_seconds", "excel_export_status",
+        )
+    } | {
+        "events": [dict(event) for event in (job.get("events") or [])[-8:] if isinstance(event, dict)],
+        "person": person_summary,
+    }
 
 
 def pipeline_job_worker() -> None:
@@ -1236,8 +1260,7 @@ def pipeline_job_worker() -> None:
             if not JOB_QUEUE:
                 JOB_WORKER_THREAD = None
                 return
-            job_id = JOB_QUEUE.pop(0)
-            refresh_queue_positions_locked()
+            job_id = JOB_QUEUE.popleft()
 
         job = JOBS.get(job_id)
         if not job:
@@ -1289,7 +1312,7 @@ def enqueue_pipeline_job(
     with JOB_LOCK:
         JOBS[job_id] = job
         JOB_QUEUE.append(job_id)
-        refresh_queue_positions_locked()
+        job["queue_position"] = len(JOB_QUEUE)
         start_job_worker_locked()
     return job
 
@@ -1372,7 +1395,10 @@ class DemoHandler(SimpleHTTPRequestHandler):
                     return
                 if job.get("status") == "queued":
                     with JOB_LOCK:
-                        refresh_queue_positions_locked()
+                        try:
+                            job["queue_position"] = JOB_QUEUE.index(job_id) + 1
+                        except ValueError:
+                            job["queue_position"] = 0
                 else:
                     refresh_job_progress(job, str(job.get("person_id") or ""), dict(job.get("options") or {}))
                 self.send_json(job)
@@ -1392,6 +1418,48 @@ class DemoHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         route = unquote(parsed.path)
         try:
+            if route == "/api/jobs/status":
+                payload = self.read_json_body()
+                if not isinstance(payload, dict):
+                    raise ValueError("The request body must be a JSON object.")
+                raw_job_ids = payload.get("job_ids")
+                if not isinstance(raw_job_ids, list):
+                    raise ValueError("job_ids must be a list.")
+                if len(raw_job_ids) > MAX_JOB_STATUS_IDS:
+                    raise ValueError(f"A maximum of {MAX_JOB_STATUS_IDS} job IDs can be checked at once.")
+                job_ids: list[str] = []
+                seen_job_ids: set[str] = set()
+                for raw_job_id in raw_job_ids:
+                    job_id = str(raw_job_id or "")
+                    if not SAFE_JOB_ID_RE.fullmatch(job_id):
+                        raise ValueError("An invalid job ID was provided.")
+                    if job_id not in seen_job_ids:
+                        job_ids.append(job_id)
+                        seen_job_ids.add(job_id)
+
+                snapshots = []
+                with JOB_LOCK:
+                    queue_positions = {
+                        queued_job_id: index
+                        for index, queued_job_id in enumerate(JOB_QUEUE, start=1)
+                    }
+                    for job_id in job_ids:
+                        job = JOBS.get(job_id)
+                        if not job:
+                            snapshots.append({"job_id": job_id, "status": "missing", "error": "Job not found."})
+                            continue
+                        if job.get("status") == "queued":
+                            job["queue_position"] = queue_positions.get(job_id, 0)
+                        if job.get("status") == "running":
+                            _refresh_job_progress(job, str(job.get("person_id") or ""), dict(job.get("options") or {}))
+                        snapshots.append(compact_job_status(job))
+                self.send_json({"jobs": snapshots})
+                return
+            if route == "/api/export/excel/refresh":
+                from src.base_llm.excel_template_export import write_excel_export
+
+                self.send_json(write_excel_export(PERSONS_ROOT))
+                return
             if route == "/api/upload":
                 filename, pdf_bytes, requested_id, options, template_upload = self.read_pdf_upload()
                 template_mode = default_template_mode(options)
